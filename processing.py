@@ -31,7 +31,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
 
 # Returns normalized pandas.DataFrame with specified columns, indexed by parsed dates.
 def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%m-%d %H%M',
-            usecols=None, skiprows=9, column_names=None):
+            usecols=None, skiprows=9, column_names=None, na_values=None):
     # Target column names. This is not the column names to be written to a file, but for in-program manipulation.
     if column_names is None:
         column_names = ['P', 'R_s', 'T_max', 'T_min', 'RH_max', 'RH_min', 'U_z']
@@ -54,7 +54,7 @@ def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%
                      header='infer',
                      index_col='Date',
                      usecols=usecols,
-                     na_values=None,
+                     na_values=na_values,
                      keep_default_na=True)
 
     # Sets column names with the default layout to ones the ETo module can recognize.
@@ -351,6 +351,9 @@ if __name__ == '__main__':
                             d/m/Y (31/12/2010).""")
     parser.add_argument('--no-conv-z', action='store_false',
                         help="""Se usado, a velocidade do vento não convertida para 2 metros é usada na exportação.""")
+    parser.add_argument('--na-values', type=str, default=None,
+                        help="""Valores NaN adicionais.
+                        Valores padrões: https://pandas.pydata.org/pandas-docs/stable/user_guide/io.html#io-navaluesconst""")
     # TODO: Setup verbose arg.
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Detalhamento sobre a execução do programa.')
