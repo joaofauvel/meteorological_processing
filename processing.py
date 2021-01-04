@@ -31,7 +31,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
 
 # Returns normalized pandas.DataFrame with specified columns, indexed by parsed dates.
 def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%m-%d %H%M',
-            usecols=None, column_names=None):
+            usecols=None, skiprows=9, column_names=None):
     # Target column names. This is not the column names to be written to a file, but for in-program manipulation.
     if column_names is None:
         column_names = ['P', 'R_s', 'T_max', 'T_min', 'RH_max', 'RH_min', 'U_z']
@@ -50,7 +50,7 @@ def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%
                      sep=sep, decimal=decimal,
                      parse_dates=date_columns,
                      date_parser=(lambda x: dt.datetime.strptime(x, date_format)),
-                     skiprows=9,
+                     skiprows=skiprows,
                      header='infer',
                      index_col='Date',
                      usecols=usecols,
@@ -64,12 +64,11 @@ def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%
 
 
 # Applies converters to df columns
-def apply_conversion(df, converters=None, factors=None):
+def apply_conversion(df, conv_p = 10.0, conv_rs = 1000.0):
     # Conversions P: hPa/mB -> KPa; R_s: KJ/m2 -> MJ/m2.
-    # TODO: Create conversion factors from argparse.
-    if converters is None:
-        converters = {'P': (lambda p: p / 10),
-                      'R_s': (lambda r_s: r_s / 1000)}
+    # TODO: Less crude way to get conversion factors from user.
+    converters = {'P': (lambda p: p / conv_p),
+                  'R_s': (lambda r_s: r_s / conv_rs)}
     logging.info('Applied conversions.')
     df.loc[:, tuple(converters.keys())] = df.agg(converters)
 
@@ -186,7 +185,7 @@ def fill_missing(df, method='6DH', fill_na=True, save_temp=True, missing_path=No
     return df
 
 
-def eto_calc(df, filepath=None, freq='D', parse_info_from_csv=True, z_msl=None, lat=None, lon=None, z_u=10):
+def eto_calc(df, filepath=None, freq='D', parse_info_from_csv=True, z_msl=None, lat=None, lon=None, tz=-3, z_u=10):
     if parse_info_from_csv:
         if filepath:
             with open(filepath, 'r') as f:
@@ -201,7 +200,11 @@ def eto_calc(df, filepath=None, freq='D', parse_info_from_csv=True, z_msl=None, 
     logging.debug('Empty lines in df: \n{}'.format(df.isna().any()))
     logging.debug('df: \n{}'.format(df.head()))
     et1 = ETo()
-    et1.param_est(df=df, freq=freq, z_msl=z_msl, lat=lat, lon=lon, z_u=z_u)
+    tz_lon = ((15 * abs(tz)) + (15 * abs(tz) + 15)) / 2
+    if z_u != 2:
+        et1.param_est(df=df, freq=freq, z_msl=z_msl, lat=lat, lon=lon, TZ_lon=tz_lon, z_u=z_u)
+    else:
+        et1.param_est(df=df, freq=freq, z_msl=z_msl, lat=lat, lon=lon, TZ_lon=tz_lon)
     eto1 = et1.eto_fao()
 
     return et1, eto1
@@ -252,14 +255,18 @@ def write(df, filepath, et=None, eto=None, headers=None, columns=None, date_form
 
 def main(args):
     df = load_df(args.i, sep=args.sep, decimal=args.dec, date_columns=args.date_columns_index,
-                 date_format=args.date_format, usecols=args.usecols, column_names=args.column_names)
-    df = localize(df, shift=args.time_shift, freq=args.freq, drop_first=args.no_drop_first, drop_last=args.no_drop_last)
-    apply_conversion(df)
-    df = fill_missing(df, method=args.fill_method, fill_na=args.no_fill_na, save_temp=args.no_save_temp,
-                      missing_path=args.temp_file)
+                 date_format=args.date_format, usecols=args.usecols, skiprows=args.skip_rows,
+                 column_names=args.column_names)
+    if args.time_shift != 0:
+        df = localize(df, shift=args.time_shift, freq=args.freq, drop_first=args.no_drop_first,
+                      drop_last=args.no_drop_last)
+    apply_conversion(df, conv_p=args.conv_p, conv_rs=args.conv_rs)
+    if args.no_fill_na_at_all is True:
+        df = fill_missing(df, method=args.fill_method, fill_na=args.no_fill_na,
+                          save_temp=args.no_save_temp, missing_path=args.temp_file)
     df_daily = met_resample(df, freq=args.resample_freq)
     et, eto = eto_calc(df_daily, filepath=args.i, freq=args.resample_freq, parse_info_from_csv=args.no_infer_from_file,
-                       z_msl=args.alt, lat=args.lat, lon=args.lon, z_u=args.z)
+                       z_msl=args.alt, lat=args.lat, lon=args.lon, tz=args.tz, z_u=args.z)
     write(df_daily, args.o, et, eto, headers=args.headers_export, columns=args.columns_export,
           date_format=args.date_format_export, conv_u=args.no_conv_z)
 
@@ -280,6 +287,9 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--sep', type=str, default=';', help='Delimitador de colunas do arquivo. Padrão: ";".')
     parser.add_argument('-d', '--dec', type=str, default=',', help="""Separador decimal utilizado no arquivo.
     Padrão: ",".""")
+    parser.add_argument('--conv-p', type=float, default=10.0, help='Fator de conversão para a pressão. Padrão: 10.0.')
+    parser.add_argument('--conv-rs', type=float, default=1000.0, help="""Fator de conversão para a radiação global.
+    Padrão: 1000.0.""")
     parser.add_argument("--date-columns-index", metavar='I', action="extend", nargs="+", type=int, default=[0, 1],
                         help='Índices das colunas de data e hora. Padrão: --date-columns-index 0 1.')
     parser.add_argument('--date-format', metavar='FORMAT', type=str, default='%Y-%m-%d %H%M',
@@ -287,7 +297,7 @@ if __name__ == '__main__':
                         https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes. Padrão: 
                         Y-m-d HM (2010-12-31 1200).""")
     parser.add_argument("--usecols", metavar='I', action="extend", nargs="+", type=int,
-                        default=[0, 1, 3, 7, 11, 12, 16, 17, 21],
+                        default=None,
                         help="""Índices das colunas para o processamento de dados. Precisa conter data e hora, pressão,
                         radiação global, temperaturas máxima e mínima ou média,
                         umidade relativa máxima e mínima ou média, e velocidade do vento. Padrão: --usecols 0 1 3 7 11
@@ -306,6 +316,10 @@ if __name__ == '__main__':
                         help='Método de preenchimento de lacunas de dados. Padrão: 6DH.')
     parser.add_argument('--no-fill-na', action='store_false', help="""Se usado, não preenche todo o restante dos dados
     com interpolação linear, após aplicação do método especificado pelo --fill-method.""")
+    parser.add_argument('--no-fill-na-at-all', action='store_false', help="""Se usado, não aplica método de
+    preenchimento.""")
+    parser.add_argument('--skip-rows', type=int, default=9, help="""Pula linhas a partir do ínício do arquivo.
+    Utilize o número de linhas do cabeçalho até o início dos dados. Padrão: 9.""")
     parser.add_argument('--no-save-temp', action='store_false', help="""Se usado, não salva um arquivo temporário.""")
     parser.add_argument('--temp-file', metavar='FILE', required=False, type=argparse.FileType('r'),
                         help="""Caminho para o arquivo temporário.""")
@@ -319,6 +333,8 @@ if __name__ == '__main__':
     Apenas necessário se --no-infer-from-file for usado.""")
     parser.add_argument('alt', nargs='?', type=float, help="""Altitude. 
     Apenas necessário se --no-infer-from-file for usado.""")
+    parser.add_argument('tz', nargs='?', type=int, default=-3, help="""Fuso horário onde os dados foram coletados.
+    Não altera o cálculo de evapotranspiração, diferemente de --time-shift. Padrão: -3.""")
     parser.add_argument("--columns-export", metavar='NAME', action="extend", nargs="+", type=str,
                         default=['T_max', 'T_min', 'RH_max', 'RH_min', 'P', 'R_s', 'U_z', 'ETo_PM'],
                         help="""Variáveis e disposição que serão exportados, exceto data. Padrão: --columns-export T_max
