@@ -30,8 +30,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
 
 
 # Returns normalized pandas.DataFrame with specified columns, indexed by parsed dates.
-def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%m-%d %H%M',
-            usecols=None, skiprows=9, column_names=None, na_values=None):
+def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%m-%d %H%M',usecols=None, skiprows=9, column_names=None, na_values=None):
     # Target column names. This is not the column names to be written to a file, but for in-program manipulation.
     if column_names is None:
         column_names = ['P', 'R_s', 'T_max', 'T_min', 'RH_max', 'RH_min', 'U_z']
@@ -67,10 +66,12 @@ def load_df(filepath, sep=';', decimal=',', date_columns=None, date_format='%Y-%
 def apply_conversion(df, conv_p = 10.0, conv_rs = 1000.0):
     # Conversions P: hPa/mB -> KPa; R_s: KJ/m2 -> MJ/m2.
     # TODO: Less crude way to get conversion factors from user.
-    converters = {'P': (lambda p: p / conv_p),
-                  'R_s': (lambda r_s: r_s / conv_rs)}
+    converters = {'P': lambda x: x/conv_p,
+                  'R_s': lambda x: x/conv_rs}
     logging.info('Applied conversions.')
-    df.loc[:, tuple(converters.keys())] = df.agg(converters)
+    df = df.astype('float64')
+    df.loc[:, converters.keys()] = df.agg(converters)
+    return df
 
 
 # Returns localized or shifted df, optionally with dropped first and/or last day.
@@ -118,12 +119,14 @@ def fill_missing(df, method='6DH', fill_na=True, save_temp=True, missing_path=No
         logging.debug('Loaded file with missing data.')
         return df
 
-    logging.debug('Forward filling same hour radiation data.')
-    print_progress_bar(0, 24, prefix='Radiation ffill progress:', suffix='', length=30)
-    for hour in range(24):
-        # [df.index.time==dt.time(hour, 0), ('R_s')] -> mask for slicing the df. Returns the same hour for each day.
-        df.loc[df.index.time == dt.time(hour, 0), 'R_s'] = df.loc[df.index.time == dt.time(hour, 0), 'R_s'].ffill()
-        print_progress_bar(hour + 1, 24, prefix='Radiation ffill progress:', suffix='', length=30)
+    #logging.debug('Forward filling same hour radiation data.')
+    #print_progress_bar(0, 24, prefix='Radiation ffill progress:', suffix='', length=30)
+    
+    #for hour in range(24):
+        #[df.index.time==dt.time(hour, 0), ('R_s')] -> mask for slicing the df. Returns the same hour for each day.
+        #df.loc[df.index.time == dt.time(hour, 0), 'R_s'] = df.loc[df.index.time == dt.time(hour, 0), 'R_s'].ffill()
+        #print_progress_bar(hour + 1, 24, prefix='Radiation ffill progress:', suffix='', length=30)
+        
     if method == 'linear':
         logging.info('Interpolating missing data.')
         df.interpolate(method='time', inplace=True)
@@ -160,16 +163,19 @@ def fill_missing(df, method='6DH', fill_na=True, save_temp=True, missing_path=No
                     hourly_df = interp_df.at_time(date.time())
 
                     missing_cols = missing_daily.at_time(date.time()).isna().any()
+                    #print(missing_cols)
                     # If there are more than 2 missing data points in the hourly df,
                     # then use the mean monthly data
                     if hourly_df.isna().sum().max() > 2:
                         hourly_df = df.loc[
-                            (df.index.month == current_day.month) & (df.index.year == current_day.year)].at_time(
-                            date.time())
+                            (df.index.month == current_day.month) & (df.index.year == current_day.year)].at_time(date.time())
 
                     # Compute the mean for each missing column, leaving existing values,
                     # and concat interpolation into main df
-                    df.loc[f'{str(current_day)} {date.time()}'].update(hourly_df.loc[:, missing_cols].mean())
+                    #print(hourly_df.loc[:, missing_cols])
+                    #print(hourly_df.loc[:, missing_cols].mean())
+                    #print(f'{str(current_day)} {date.time()}')
+                    df.loc[f'{str(current_day)} {date.time()}'] = hourly_df.loc[:, missing_cols].mean()
 
             # Increment day
             current_day += dt.timedelta(days=1)
@@ -178,6 +184,7 @@ def fill_missing(df, method='6DH', fill_na=True, save_temp=True, missing_path=No
     if fill_na:
         # Interpolate rest of na
         df.interpolate(method='time', inplace=True)
+        logging.debug('Interpolating rest...')
     logging.debug('Filled hourly df: \n{}'.format(df.head()))
     if save_temp:
         df.to_csv('temp_filled.csv')
@@ -254,16 +261,18 @@ def write(df, filepath, et=None, eto=None, headers=None, columns=None, date_form
 
 
 def main(args):
+    #pd.set_option('mode.chained_assignment', None)
     df = load_df(args.i, sep=args.sep, decimal=args.dec, date_columns=args.date_columns_index,
                  date_format=args.date_format, usecols=args.usecols, skiprows=args.skip_rows,
                  column_names=args.column_names)
     if args.time_shift != 0:
         df = localize(df, shift=args.time_shift, freq=args.freq, drop_first=args.no_drop_first,
                       drop_last=args.no_drop_last)
-    apply_conversion(df, conv_p=args.conv_p, conv_rs=args.conv_rs)
+    df = apply_conversion(df, conv_p=args.conv_p, conv_rs=args.conv_rs)
     if args.no_fill_na_at_all is True:
         df = fill_missing(df, method=args.fill_method, fill_na=args.no_fill_na,
                           save_temp=args.no_save_temp, missing_path=args.temp_file)
+    print(df.dtypes)
     df_daily = met_resample(df, freq=args.resample_freq)
     et, eto = eto_calc(df_daily, filepath=args.i, freq=args.resample_freq, parse_info_from_csv=args.no_infer_from_file,
                        z_msl=args.alt, lat=args.lat, lon=args.lon, tz=args.tz, z_u=args.z)
